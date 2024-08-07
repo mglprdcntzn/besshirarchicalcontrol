@@ -1,12 +1,12 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 Simulation files
 Miguel Parada Contzen
-Conce, May 2024
+Conce, August 2024
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 The files contained in this folder are for computing the examples in the paper
 
-	Parada Contzen, Miguel. 'Distributed voltage regulation and state of charge consensus control of autonomous battery energy storage systems in medium voltage circuits.', 2024.
+	Parada Contzen, Miguel. 'A distributed double-layer control algorithm for medium voltage regulation and state of charge consensus of autonomous battery energy storage systems.', 2024.
 
 All the simulation figures in the paper are obtained using conventional desktop hardware and the following Python 3.10 scripts:
 

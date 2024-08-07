@@ -132,7 +132,10 @@ def print_circuit(nodes, lines, plt_name,cts_data):
         ax.plot(xx, yy, linestyle='-', color='blue', alpha=0.5,zorder=1)
     #labels on nodes
     for i in range(len(nodes[:, 0])):
-        ax.text(nodes[i, 0]+40, nodes[i, 1]+40, i, fontsize=10, ha='center', va='center',color='green',zorder=2)    
+        if i>0:
+            ax.text(nodes[i, 0]+40, nodes[i, 1]+40, i, fontsize=10, ha='center', va='center',color='green',zorder=2)
+        else:
+            ax.text(nodes[i, 0], nodes[i, 1]+40, "Root Node", fontsize=10, ha='center', va='center',color='red',zorder=2)
     #find corners coordinates
     plt.tight_layout()
     left, right = ax.get_xlim()
@@ -149,8 +152,8 @@ def print_circuit(nodes, lines, plt_name,cts_data):
     ax.plot([scale0x+300,scale0x+300], [scale0y+10,scale0y-10], linestyle='-', color='black')
     ax.plot([scale0x+400,scale0x+400], [scale0y+10,scale0y-10], linestyle='-', color='black')
     
-    ax.text(scale0x+200, scale0y-15, '200[m]', fontsize=8, ha='center', va='top',color='black') 
-    ax.text(scale0x+400, scale0y-15, '400[m]', fontsize=8, ha='center', va='top',color='black') 
+    ax.text(scale0x+200, scale0y-15, '200m', fontsize=8, ha='center', va='top',color='black') 
+    ax.text(scale0x+400, scale0y-15, '400m', fontsize=8, ha='center', va='top',color='black') 
     #find corner with more/less points
     corner_upleft = 0
     corner_upright = 0
@@ -206,9 +209,9 @@ def print_circuit(nodes, lines, plt_name,cts_data):
     
     ax.text(datax, datay, 
             'Non-root nodes: '+str(N-1)+'\n'+
-            'Total Rated Power: '+str(Sload)+'[MVA]\n'+
-            'Total installed PV: '+str(Sdg)+'[MVA]\n'+
-            'Total length: '+str(length)+'[km]',
+            'Total Rated Power: '+str(Sload)+' MVA\n'+
+            'Total installed PV: '+str(Sdg)+' MVA\n'+
+            'Total length: '+str(length)+' km',
             fontsize=12, ha=hall, va=vall,color='black') 
     
     # Saving the plot to an image file

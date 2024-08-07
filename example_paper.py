@@ -39,7 +39,7 @@ barpv = pv / S
 ct.summary_circuit(nodes, lines,load,pv,'example_circuit')
 ########################################################
 #define time
-t0 = -1.5*24*60  #begining of time in min
+t0 = -0.5*24*60  #begining of time in min
 tf = 1*24 * 60  #end of time
 T = 0.1  #time step
 nn = int((tf - t0) / T) + 1  #num of instants
@@ -86,6 +86,8 @@ for kk in range(nn):
     ##################################
     #instante
     tt = t[kk]
+    if tt==0:
+        kinit = kk
     #renovar perfiles de carga cada 24hrs
     if (tt)%(24*60)==0:
         perfiles_residuales_old = perfiles_residuales
@@ -135,9 +137,16 @@ fig, axes = plt.subplots(1,3,figsize=(15 * 2 / 2.54, 5 * 2 / 2.54))
 axes[0].plot(t / 60, np.transpose(ve_ol))
 axes[1].plot(t / 60, np.transpose(Pii))
 axes[2].plot(t / 60, np.transpose(P000_ol))
-axes[0].set_title('Voltage amplitudes [p.u.]')
-axes[1].set_title('Net power consumption at nodes [kW]')
-axes[2].set_title('Power injected at root node [MW]')
+axes[0].set_title('Voltage amplitudes')
+axes[1].set_title('Net power consumption at nodes')
+axes[2].set_title('Power injected at root node')
+
+axes[0].text(-0.1, 1.07, 'a)', transform=axes[0].transAxes, fontsize=14, va='top', ha='left')
+axes[1].text(-0.1, 1.07, 'b)', transform=axes[1].transAxes, fontsize=14, va='top', ha='left')
+axes[2].text(-0.1, 1.07, 'c)', transform=axes[2].transAxes, fontsize=14, va='top', ha='left')
+axes[0].set_ylabel('$V$ (p.u.)')
+axes[1].set_ylabel('$P_i$ (kW)')
+axes[2].set_ylabel('$P_0$ (MW)')
 
 P0olmax = np.ceil(max(P000_ol)*100)/100 + 0.01
 P0olmin = np.floor(min(P000_ol)*100)/100 - 0.01
@@ -148,9 +157,199 @@ for ax in axes.flat:
     ax.grid(True)
     ax.set_xticks(custom_ticks)
     ax.set_xticklabels(custom_labels)
+    ax.set_xlabel('Time (hrs)')
 fig.tight_layout()
 
 file_name = 'OpenLoop'
+fig.savefig(file_name+'.eps', format='eps', bbox_inches='tight')
+
+#######################################################
+#rescue from open loop
+Vabs_OL = np.abs(ve)
+P0_OL   = np.real(np.squeeze(S*bars0))/1000
+pf0_OL  = np.abs(np.real(np.squeeze(bars0)))/np.abs(np.squeeze(bars0))
+
+#######################################################
+# OPEN LOOP
+print('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+print("Battery following reference")
+print('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+########################################################
+#batts specs
+bat_cap= 0.5*70/V #70kWh=avg elec car; 50Wh = laptop battery
+Pbat_rate  = 10
+Pbat_max   = 8
+Pbat_scape = 8
+
+batmin = 0.1 #min % charge
+batmax = 0.9 #max % charge
+
+fprate = 0.98
+fpmax  = 0.99
+fpmin  = 0.80
+########################################################
+#select nodes with BESS
+bp     = 0.4
+n_BESS = round(bp*N)
+
+nodes_with_BESS = np.random.choice(list(range(0,N)) , n_BESS,replace=False)
+
+nodes_wout_BESS = list(range(0,N))
+for iii in nodes_with_BESS:
+    nodes_wout_BESS.remove(iii)
+
+installed_batteries = np.zeros((N,))
+installed_batteries[nodes_with_BESS] = 1
+
+Pminmax = Pbat_max*installed_batteries#
+Prate   = Pbat_rate*installed_batteries#
+Psafty  = Pbat_scape*installed_batteries#
+
+SOCinit = np.squeeze(np.random.normal(0.5,0.2,N))#initial condition random
+#######################################################
+bc  = 1.00
+bat = bat_cap*bc*installed_batteries #installed batteries in Ahr; 
+########################################################
+#batteries perfect profile
+Ppv_total = Ppv.sum(0)
+Epv_total = Ppv_total.sum()*(tf-t0)/60
+Ebat_total = V*bat.sum()
+
+Ppv_mean  = 0.5*Ppv_total.sum()/nn
+
+Pbat_SP   = S*(Ppv_total - Ppv_mean)/n_BESS
+
+########################################################
+#prefill vectors for primary ctrl simulation
+Pbat_fil    = 1*installed_batteries
+
+fpbat_SP     = np.ones((N, 1))
+
+Pbat  = np.zeros((N, nn))
+Qbat  = np.zeros((N, nn))
+Ebat  = np.zeros((N, nn))
+SOC   = np.zeros((N, nn))
+SOC[:,0] = 1*SOCinit
+SOC[np.isinf(SOC[:,0]),0] = 0
+Eant  = SOC[:,0]*bat*V
+    
+Vav = 0.99*V*np.ones((N, 1))
+########################################################
+#loop through time with bat SP Ctrl 
+for kk in range(nn):
+    ##################################
+    #instante
+    tt = t[kk]
+    ##################################
+    #Batt
+    if Pbat_SP[kk]>Pbat_max:
+        Pbat_SP[kk] = Pbat_max
+    elif Pbat_SP[kk]<-Pbat_max:
+        Pbat_SP[kk] = -Pbat_max
+    if Pbat_SP[kk]>=0:
+        fpbat_SP = fpmax*np.ones((N, 1))
+    else:
+        fpbat_SP = fpmin*np.ones((N, 1))
+    
+    p, q, e = tm.bat_interpole(T,np.squeeze(Pbat_SP[kk]*np.ones((N,1))), np.squeeze(fpbat_SP),V*bat, Eant ,batmin,batmax)
+    
+    Pbat[:, kk] = p/S
+    Qbat[:, kk] = q/S
+    Ebat[:, kk] = e
+    Eant        = e
+    SOC[:, kk]  = e/bat/V
+    SOC[np.isinf(SOC[:,kk]),kk] = 0
+    SOC[np.isnan(SOC[:,kk]),kk] = 0
+    ##################################
+    #Power balance (in pu)
+    Pbalance = Pload[:, kk] + Pbat[:,kk] - Ppv[:, kk]
+    Qbalance = Qload[:, kk] + Qbat[:,kk] - Qpv[:, kk] 
+    
+    barS = Pbalance + 1j * Qbalance
+    ese[:, kk] = barS
+    barS = np.diag(barS)
+    ##################################
+    ve[:, kk], its[0, kk], ittime[0, kk], gues[0, kk] = fx.SC(barY, barY0, -barS, V0, itmax, prec)
+    ##################################
+    #power at root node
+    VVV = np.diag(ve[:, kk])
+    bars0[:, kk] = np.ones((1, N)) @ np.conj(barY0) @ (np.conj(VVV) - np.eye(N)) @ np.ones((N, 1))
+    ##################################
+    #initial conditions
+    V0 = VVV
+########################################################
+#draw quantities
+ve_batsp     = np.abs(ve)
+P000_batsp   = np.real(np.squeeze(S*bars0))/1000
+Pii_batsp    = np.real(np.squeeze(S*ese))
+pf000_batsp  = np.abs(np.real(np.squeeze(bars0)))/np.abs(np.squeeze(bars0))
+
+
+fig, axes = plt.subplots(1,3,figsize=(15 * 2 / 2.54, 5 * 2 / 2.54))
+axes[0].plot(t / 60, np.transpose(ve_batsp))
+axes[1].plot(t / 60, np.transpose(Pii_batsp))
+axes[2].plot(t / 60, np.transpose(P000_batsp))
+axes[0].set_title('Voltage amplitudes')
+axes[1].set_title('Net power consumption at nodes')
+axes[2].set_title('Power injected at root node')
+
+axes[0].text(-0.1, 1.07, 'a)', transform=axes[0].transAxes, fontsize=14, va='top', ha='left')
+axes[1].text(-0.1, 1.07, 'b)', transform=axes[1].transAxes, fontsize=14, va='top', ha='left')
+axes[2].text(-0.1, 1.07, 'c)', transform=axes[2].transAxes, fontsize=14, va='top', ha='left')
+axes[0].set_ylabel('$V$ (p.u.)')
+axes[1].set_ylabel('$P_i$ (kW)')
+axes[2].set_ylabel('$P_0$ (MW)')
+
+P0batspmax = np.ceil(max(P000_batsp)*100)/100 + 0.01
+P0batspmin = np.floor(min(P000_batsp)*100)/100 - 0.01
+axes[2].set_ylim(P0batspmin, P0batspmax)
+
+for ax in axes.flat:
+    ax.set_xlim(0, t[-1]/60)
+    ax.grid(True)
+    ax.set_xticks(custom_ticks)
+    ax.set_xticklabels(custom_labels)
+    ax.set_xlabel('Time (hrs)')
+    ax.set_xlabel('Time (hrs)')
+fig.tight_layout()
+
+file_name = 'BatScheduled_1'
+fig.savefig(file_name+'.eps', format='eps', bbox_inches='tight')
+
+
+fig, axes = plt.subplots(1,3,figsize=(15 * 2 / 2.54, 5 * 2 / 2.54))
+
+axes[0].plot(t / 60, np.mean(Vabs_OL, axis=0),label='Open loop')
+axes[0].plot(t / 60, np.mean(ve_batsp, axis=0),label='Power scheduled')
+axes[0].legend(loc='best')
+
+axes[1].plot(t / 60, np.transpose(P0_OL),label='Open loop')
+axes[1].plot(t / 60, np.transpose(P000_batsp),label='Power scheduled')
+axes[1].legend(loc='best')
+
+axes[2].plot(t / 60, np.transpose(Pbat*S))
+
+axes[0].set_title('Mean voltage aplitudes')
+axes[1].set_title('Power injected at root node')
+axes[2].set_title('Bat Pwr Scheduled')
+
+axes[0].text(-0.1, 1.07, 'a)', transform=axes[0].transAxes, fontsize=14, va='top', ha='left')
+axes[1].text(-0.1, 1.07, 'b)', transform=axes[1].transAxes, fontsize=14, va='top', ha='left')
+axes[2].text(-0.1, 1.07, 'c)', transform=axes[2].transAxes, fontsize=14, va='top', ha='left')
+axes[0].set_ylabel('$V$ (p.u.)')
+axes[1].set_ylabel('$P_0$ (MW)')
+axes[2].set_ylabel('$P_{bat}$ (kW)')
+
+
+for ax in axes.flat:
+    ax.set_xlim(0, t[-1]/60)
+    ax.grid(True)
+    ax.set_xticks(custom_ticks)
+    ax.set_xticklabels(custom_labels)
+    ax.set_xlabel('Time (hrs)')
+fig.tight_layout()
+
+file_name = 'BatScheduled_2'
 fig.savefig(file_name+'.eps', format='eps', bbox_inches='tight')
 
 #######################################################
@@ -160,40 +359,29 @@ print("Primary Level Closed Loop")
 print('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
 ########################################################
 #penetration of batteries in circuit
-# bat_penetration = [0.15, 0.25, 0.50, 0.75, 0.85, 1.00]#p.u.
-bat_penetration = [0.5, 0.75, 1.00]
-# bat_penetration = [1.0]
+bat_capacities = [0.30, 0.60, 1.0]
 ########################################################
 #variables to draw
-mean_V_1c = np.zeros((len(bat_penetration)+1, nn))
-max_V_1c  = np.zeros((len(bat_penetration)+1, nn))
-min_V_1c  = np.zeros((len(bat_penetration)+1, nn))
+mean_V_1c = np.zeros((len(bat_capacities)+1, nn))
+max_V_1c  = np.zeros((len(bat_capacities)+1, nn))
+min_V_1c  = np.zeros((len(bat_capacities)+1, nn))
 
-P000_1c   = np.zeros((len(bat_penetration)+1, nn))
-pf000_1c  = np.zeros((len(bat_penetration)+1, nn))
+P000_1c   = np.zeros((len(bat_capacities)+1, nn))
+pf000_1c  = np.zeros((len(bat_capacities)+1, nn))
 
 legends_1c = []
 
 #rescue from open loop
-Vabs = np.abs(ve)
-mean_V_1c[0,:]=np.mean(Vabs, axis=0)
-max_V_1c[0,:] =np.max(Vabs, axis=0)
-min_V_1c[0,:] =np.min(Vabs, axis=0)
+mean_V_1c[0,:]=np.mean(Vabs_OL, axis=0)
+max_V_1c[0,:] =np.max(Vabs_OL, axis=0)
+min_V_1c[0,:] =np.min(Vabs_OL, axis=0)
 
-P000_1c[0,:] = np.real(np.squeeze(S*bars0))/1000
-pf000_1c[0,:] = np.abs(np.real(np.squeeze(bars0)))/np.abs(np.squeeze(bars0))
+P000_1c[0,:] = P0_OL
+pf000_1c[0,:] = pf0_OL
 
 legends_1c.append('Open loop')
-
 ########################################################
-#batts specs
-bat_cap= 0.5*70/V #70kWh=avg elec car; 50Wh = laptop battery
-batmin = 0.1 #min % charge
-batmax = 0.9 #max % charge
-Pbat_rate  = 10
-Pbat_max   = 10
-Pbat_scape = 10
-
+#Fuzzy constants
 ep_a   = 0.01
 ep_b   = 0.01
 ep_c   = 0.0001
@@ -211,9 +399,6 @@ T1real = ctrlsteps1*T
 #Control constants
 Kp  = np.squeeze(np.random.normal(6,0.1,N))*1e2#Eant/bat/V
 
-fprate = 0.98
-fpmax  = 0.99
-fpmin  = 0.80
 ########################################################
 #Average filters
 tau_v = 3*60*np.squeeze(np.random.normal(1,0.1,N))#
@@ -229,29 +414,13 @@ Bfp     = (1-Afp)
 tau_ff = T1*2*np.squeeze(np.random.normal(1,0.1,N))## ca. 10min
 Aff    = np.exp(-T1/tau_ff)
 Bff    = (1-Aff)
-########################################################
-#loop through penetrations
-bp_count=0
-nodes_wout_BESS = list(range(0,N))
-nodes_with_BESS = []
-for bp in bat_penetration:
-    ########################################################
-    #select nodes with BESS
-    n_nodes_withBESS = len(nodes_with_BESS)
-    n_BESS = round(bp*N)
-    for _ in range(n_BESS-n_nodes_withBESS):
-        if nodes_wout_BESS:  # Check if array1 is not empty
-            element = np.random.choice(nodes_wout_BESS)
-            nodes_wout_BESS.remove(element)
-            nodes_with_BESS.append(element)
-    ########################################################
-    installed_batteries = np.zeros((N,))
-    installed_batteries[nodes_with_BESS] = 1
-    bat = bat_cap*installed_batteries #installed batteries in Ahr; 
 
-    Pminmax = Pbat_max*installed_batteries#
-    Prate   = Pbat_rate*installed_batteries#
-    Psafty  = Pbat_scape*installed_batteries#
+########################################################
+#loop through capacities
+bp_count=0
+for bc in bat_capacities:
+    ########################################################
+    bat = bat_cap*bc*installed_batteries #installed batteries in Ahr; 
     ########################################################
     #prefill vectors for primary ctrl simulation
     Pbat_SP     = 0*installed_batteries#np.ones((N, 1))
@@ -268,7 +437,7 @@ for bp in bat_penetration:
     Qbat  = np.zeros((N, nn))
     Ebat  = np.zeros((N, nn))
     SOC   = np.zeros((N, nn))
-    SOC[:,0] = np.squeeze(np.random.normal(0.5,0.1,N))#initial condition random
+    SOC[:,0] = 1*SOCinit
     SOC[np.isinf(SOC[:,0]),0] = 0
     Eant  = SOC[:,0]*bat*V
         
@@ -349,7 +518,7 @@ for bp in bat_penetration:
                     fpbat_SP[ii]     = min(max(fpaux,fpmin),fpmax)
                     fpbat_filant[ii] = fpbat_SP[ii]
     ########################################################
-    #draw quantities
+    #save quantities for drawing
     bp_count = bp_count+1
     
     Vabs = np.abs(ve)
@@ -360,7 +529,7 @@ for bp in bat_penetration:
     P000_1c[bp_count,:]  = np.real(np.squeeze(S*bars0))/1000
     pf000_1c[bp_count,:] = np.abs(np.real(np.squeeze(bars0)))/np.abs(np.squeeze(bars0))
     
-    legends_1c.append('Prim. Ctrl.: '+str(bp*100)+'%')
+    legends_1c.append('Prim. Ctrl.: '+str(bc*100)+'%')
     
     SOC_1c  = SOC*1
     Pbat_1c = Pbat*S
@@ -371,17 +540,24 @@ fig, axes = plt.subplots(1,3,figsize=(15 * 2 / 2.54, 5 * 2 / 2.54))
 axes[0].plot(t / 60, np.transpose(mean_V_1c))
 axes[1].plot(t / 60, np.transpose(P000_1c))
 axes[2].plot(t / 60, np.transpose(pf000_1c))
-axes[0].set_title('Mean voltage amplitudes [p.u.]')
-axes[1].set_title('Power injected at root node [MW]')
+axes[0].set_title('Mean voltage amplitudes')
+axes[1].set_title('Power injected at root node')
 axes[2].set_title('Power factor at root node')
 axes[1].set_ylim(P0olmin, P0olmax)
 
+axes[0].text(-0.1, 1.07, 'a)', transform=axes[0].transAxes, fontsize=14, va='top', ha='left')
+axes[1].text(-0.1, 1.07, 'b)', transform=axes[1].transAxes, fontsize=14, va='top', ha='left')
+axes[2].text(-0.1, 1.07, 'c)', transform=axes[2].transAxes, fontsize=14, va='top', ha='left')
+axes[0].set_ylabel('$V$ (p.u.)')
+axes[1].set_ylabel('$P_0$ (MW)')
+axes[2].set_ylabel('$f_{p}$')
 
 for ax in axes.flat:
     ax.set_xlim(0, t[-1]/60)
     ax.grid(True)
     ax.set_xticks(custom_ticks)
     ax.set_xticklabels(custom_labels)
+    ax.set_xlabel('Time (hrs)')
 fig.legend(legends_1c,loc='upper center', bbox_to_anchor=(0.5, -0.01), ncol=4)
 fig.tight_layout()
 
@@ -408,6 +584,40 @@ fig.savefig(file_name+'.eps', format='eps', bbox_inches='tight')
 #     ax.set_xticks(custom_ticks)
 #     ax.set_xticklabels(custom_labels)
 # plt.tight_layout()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #######################################################
 print('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
 print("Secondary Level Closed Loop")
@@ -454,7 +664,7 @@ Pbat  = np.zeros((N, nn))
 Qbat  = np.zeros((N, nn))
 Ebat  = np.zeros((N, nn))
 SOC   = np.zeros((N, nn))
-# SOC[:,0] = np.squeeze(np.random.normal(0.5,0.1,N))#initial condition random
+SOC[:,0] = 1*SOCinit
 SOC[np.isinf(SOC[:,0]),0] = 0
 Eant  = SOC[:,0]*bat*V
     
@@ -577,7 +787,7 @@ Pbat  = np.zeros((N, nn))
 Qbat  = np.zeros((N, nn))
 Ebat  = np.zeros((N, nn))
 SOC   = np.zeros((N, nn))
-# SOC[:,0] = np.squeeze(np.random.normal(0.5,0.1,N))#initial condition random
+SOC[:,0] = 1*SOCinit
 SOC[np.isinf(SOC[:,0]),0] = 0
 Eant  = SOC[:,0]*bat*V
     
@@ -689,13 +899,13 @@ axes[0].plot(t / 60, np.transpose(mean_V_1c[0,:]))
 axes[0].plot(t / 60, np.transpose(mean_V_1c[-1,:]))
 axes[0].plot(t / 60, np.transpose(mean_V_2c1))
 axes[0].plot(t / 60, np.transpose(mean_V_2c2))
-axes[0].set_title('Mean voltage amplitudes [p.u.]')
+axes[0].set_title('Mean voltage amplitudes')
 
 axes[1].plot(t / 60, np.transpose(P000_1c[0,:]))
 axes[1].plot(t / 60, np.transpose(P000_1c[-1,:]))
 axes[1].plot(t / 60, np.transpose(P000_2c1))
 axes[1].plot(t / 60, np.transpose(P000_2c2))
-axes[1].set_title('Power injected at root node [MW]')
+axes[1].set_title('Power injected at root node')
 axes[1].set_ylim(P0olmin, P0olmax)
 
 
@@ -705,11 +915,19 @@ axes[2].plot(t / 60, np.transpose(pf000_2c1))
 axes[2].plot(t / 60, np.transpose(pf000_2c2))
 axes[2].set_title('Power factor at root node')
 
+axes[0].text(-0.1, 1.07, 'a)', transform=axes[0].transAxes, fontsize=14, va='top', ha='left')
+axes[1].text(-0.1, 1.07, 'b)', transform=axes[1].transAxes, fontsize=14, va='top', ha='left')
+axes[2].text(-0.1, 1.07, 'c)', transform=axes[2].transAxes, fontsize=14, va='top', ha='left')
+axes[0].set_ylabel('$V$ (p.u.)')
+axes[1].set_ylabel('$P_0$ (MW)')
+axes[2].set_ylabel('$f_{p}$')
+
 for ax in axes.flat:
     ax.set_xlim(0, t[-1]/60)
     ax.grid(True)
     ax.set_xticks(custom_ticks)
     ax.set_xticklabels(custom_labels)
+    ax.set_xlabel('Time (hrs)')
 fig.legend(['Open loop','Primary ctrl','Fixed consensus ctrl','Random consensus ctrl'],loc='upper center', bbox_to_anchor=(0.5, -0.01), ncol=4)
 fig.tight_layout()
 
@@ -764,11 +982,20 @@ axes[0].set_title('SoC Primary Ctrl')
 axes[1].set_title('SoC Fixed Sec. Ctrl')
 axes[2].set_title('SoC Switch Sec. Ctrl')
 
+axes[0].text(-0.1, 1.09, 'a)', transform=axes[0].transAxes, fontsize=14, va='top', ha='left')
+axes[1].text(-0.1, 1.09, 'b)', transform=axes[1].transAxes, fontsize=14, va='top', ha='left')
+axes[2].text(-0.1, 1.09, 'c)', transform=axes[2].transAxes, fontsize=14, va='top', ha='left')
+# axes[0].set_ylabel('SoC')
+# axes[1].set_ylabel('SoC')
+# axes[2].set_ylabel('SoC')
+
 for ax in axes.flat:
+    ax.set_ylim(0, 1)
     ax.set_xlim(0, t[-1]/60)
     ax.grid(True)
     ax.set_xticks(custom_ticks)
     ax.set_xticklabels(custom_labels)
+    ax.set_xlabel('Time (hrs)')
 fig.tight_layout()
 
 file_name = 'SOC'
@@ -779,15 +1006,88 @@ fig, axes = plt.subplots(1,3,figsize=(15 * 2 / 2.54, 5 * 2 / 2.54))
 axes[0].plot(t / 60, np.transpose(Pbat_1c))
 axes[1].plot(t / 60, np.transpose(Pbat_2c1))
 axes[2].plot(t / 60, np.transpose(Pbat_2c2))
-axes[0].set_title('Bat Pwr Primary Ctrl [kW]')
-axes[1].set_title('Bat Pwr Fixed Sec. Ctrl [kW]')
-axes[2].set_title('Bat Pwr Switch Sec. Ctrl [kW]')
+axes[0].set_title('Bat Pwr Primary Ctrl')
+axes[1].set_title('Bat Pwr Fixed Sec. Ctrl')
+axes[2].set_title('Bat Pwr Switch Sec. Ctrl')
+
+axes[0].text(-0.1, 1.07, 'a)', transform=axes[0].transAxes, fontsize=14, va='top', ha='left')
+axes[1].text(-0.1, 1.07, 'b)', transform=axes[1].transAxes, fontsize=14, va='top', ha='left')
+axes[2].text(-0.1, 1.07, 'c)', transform=axes[2].transAxes, fontsize=14, va='top', ha='left')
+axes[0].set_ylabel('$P_{bat}$ (kW)')
+axes[1].set_ylabel('$P_{bat}$ (kW)')
+axes[2].set_ylabel('$P_{bat}$ (kW)')
+
 for ax in axes.flat:
     ax.set_xlim(0, t[-1]/60)
     ax.grid(True)
     ax.set_xticks(custom_ticks)
     ax.set_xticklabels(custom_labels)
+    ax.set_xlabel('Time (hrs)')
 fig.tight_layout()
 
 file_name = 'Pbat'
 fig.savefig(file_name+'.eps', format='eps', bbox_inches='tight')
+
+###############################
+std_mean_V_OL     = np.std(mean_V_1c[0,kinit:-1], ddof=1)
+std_mean_V_pwrsch = np.std(np.mean(ve_batsp[:,kinit:-1], axis=0), ddof=1)
+std_mean_V_1clast = np.std(mean_V_1c[-1,kinit:-1], ddof=1)
+std_mean_V_2c1    = np.std(mean_V_2c1[kinit:-1], ddof=1)
+std_mean_V_2c2    = np.std(mean_V_2c2[kinit:-1], ddof=1)
+
+values1= [round(100*std_mean_V_pwrsch/std_mean_V_OL),
+          round(100*std_mean_V_1clast/std_mean_V_OL),
+          round(100*std_mean_V_2c1/std_mean_V_OL),
+          round(100*std_mean_V_2c2/std_mean_V_OL),
+          ]
+
+print('First row of table:')
+latex_table = "& $"+"\%$ & $".join(map(str, values1)) + "\%$\\\\\n"
+print(latex_table)
+
+
+std_mean_P0_OL     = np.std(P000_1c[0,kinit:-1], ddof=1)
+std_mean_P0_pwrsch = np.std(P000_batsp[kinit:-1], ddof=1)
+std_mean_P0_1clast = np.std(P000_1c[-1,kinit:-1], ddof=1)
+std_mean_P0_2c1    = np.std(P000_2c1[kinit:-1], ddof=1)
+std_mean_P0_2c2    = np.std(P000_2c2[kinit:-1], ddof=1)
+
+values2= [round(100*std_mean_P0_pwrsch/std_mean_P0_OL),
+          round(100*std_mean_P0_1clast/std_mean_P0_OL),
+          round(100*std_mean_P0_2c1/std_mean_P0_OL),
+          round(100*std_mean_P0_2c2/std_mean_P0_OL),
+          ]
+
+print('Second row of table:')
+latex_table = "& $"+"\%$ & $".join(map(str, values2)) + "\%$\\\\\n"
+print(latex_table)
+
+mean_pf_ol  = np.mean(pf000_1c[0,kinit:-1])
+mean_pf_ps  = np.mean(pf000_batsp[kinit:-1])
+mean_pf_1c  = np.mean(pf000_1c[-1,kinit:-1])
+mean_pf_2c1 = np.mean(pf000_2c1[kinit:-1])
+mean_pf_2c2 = np.mean(pf000_2c2[kinit:-1])
+    
+values4= [round(mean_pf_ol,4),
+          round(mean_pf_ps,4),
+          round(mean_pf_1c,4),
+          round(mean_pf_2c1,4),
+          round(mean_pf_2c2,4),
+          ]
+
+print('Third row of table:')
+latex_table = "& $"+"$ & $".join(map(str, values4)) + "$\\\\\n"
+print(latex_table)
+
+mean_std_Pbat1c  = np.mean(np.std(Pbat_1c[nodes_with_BESS,kinit:-1], axis=0, ddof=1))
+mean_std_Pbat2c1 = np.mean(np.std(Pbat_2c1[nodes_with_BESS,kinit:-1], axis=0, ddof=1))
+mean_std_Pbat2c2 = np.mean(np.std(Pbat_2c2[nodes_with_BESS,kinit:-1], axis=0, ddof=1))
+
+values3= [round(mean_std_Pbat1c,3),
+          round(mean_std_Pbat2c1,3),
+          round(mean_std_Pbat2c2,3)
+          ]
+
+print('Fourth row of table:')
+latex_table = "& $"+"$ & $".join(map(str, values3)) + "$\\\\\n"
+print(latex_table)
